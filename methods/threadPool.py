@@ -3,6 +3,7 @@ import os
 from os import getenv
 from zipfile import ZipFile
 from multiprocessing.pool import ThreadPool
+import datetime
 
 import boto3
 from dotenv import load_dotenv
@@ -48,16 +49,20 @@ class Crawler():
 
 
 if __name__ == "__main__":
-    df = read_csv("benchmark/result.csv")
+    benchmark_path = "benchmark/result.csv"
+    df = read_csv(benchmark_path)
     load_dotenv()
     s3 = boto3.client(
         's3',
         aws_access_key_id=getenv('AWS_ACCESS_KEY_ID'),
         aws_secret_access_key=getenv('AWS_SECRET_ACCESS_KEY')
     )
+    time_init = datetime.datetime.now()
     crawler = Crawler(s3)
     arquivos = crawler.run()
+    delta = datetime.datetime.now() - time_init
     df = df.append(
-        {"method": "thread", "time": 10, "arquivos_count": len(arquivos)},
+        {"method": "thread", "time": delta.total_seconds(), "arquivos_count": len(arquivos)},
         ignore_index=True)
+    df.to_csv(benchmark_path, index=False)
 

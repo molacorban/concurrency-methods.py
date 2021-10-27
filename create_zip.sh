@@ -3,7 +3,6 @@ SEED=$2
 
 for i in `seq $QUANTIDADE_DE_ARQUIVOS`
 do
-    echo $i
     cp "$SEED" "$SEED"_"$i".to_zip
 done
 
