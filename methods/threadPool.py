@@ -18,10 +18,6 @@ class Crawler():
         self.zip_obj = None
 
     def upload_arquivo_s3(self, arquivo: bytes) -> None:
-        """Faz upload de um arquivo em modo binário para um Bucket
-        Args:
-            arquivo (bytes): arquivo para upload
-        """
         path = getenv("FILE_PREFIX")
         caminho_arquivo_s3 = f"{path}/threadPool/{os.path.basename(arquivo)}"
         logger.info("Realizando upload para s3 ...")
@@ -31,10 +27,6 @@ class Crawler():
             Key=caminho_arquivo_s3)
 
     def store_zip_content(self, zip_content: bytes) -> list:
-        """Salva todos os arquivos contidos em um zip para um Bucket utilizando pool de Threads
-        Returns:
-            list: lista de arquivos
-        """
         self.zip_obj = ZipFile(io.BytesIO(zip_content), "r")
         lista_arquivos = self.zip_obj.namelist()
         pool = ThreadPool()
@@ -42,16 +34,14 @@ class Crawler():
         return lista_arquivos
 
     def run(self):
-        with open("resources/example.zip", "rb") as zipExamples:
+        with open(getenv("RESOURCE_FILE"), "rb") as zipExamples:
             zipBytes = zipExamples.read()
             arquivos = self.store_zip_content(zipBytes)
         return arquivos
 
-
-if __name__ == "__main__":
-    benchmark_path = "benchmark/result.csv"
+def main():
+    benchmark_path = getenv("BENCHMARK_FILE")
     df = read_csv(benchmark_path)
-    load_dotenv()
     s3 = boto3.client(
         's3',
         aws_access_key_id=getenv('AWS_ACCESS_KEY_ID'),
@@ -61,8 +51,12 @@ if __name__ == "__main__":
     crawler = Crawler(s3)
     arquivos = crawler.run()
     delta = datetime.datetime.now() - time_init
-    df = df.append(
-        {"method": "thread", "time": delta.total_seconds(), "arquivos_count": len(arquivos)},
-        ignore_index=True)
+    data = {"method": "thread", "time": delta.total_seconds(), "arquivos_count": len(arquivos)}
+    logger.info(f"Finalizado: {data}")
+    df = df.append(data, ignore_index=True)
     df.to_csv(benchmark_path, index=False)
 
+
+if __name__ == "__main__":
+    load_dotenv()
+    main()
