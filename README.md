@@ -8,7 +8,20 @@ Para criar corrotinas utilizando a sintaxe `async/await` é importante que as bi
 
 ## Resultados
 
+O processo de upload foi feito para três métodos diferentes, primeiro para forma sequencial, onde o upload dos arquivos é feito um atrás do outro. A outra técnina é utilizando threads, onde cada upload de arquivo é feito em um thread separada de forma concorrente. Note que essas threads apenas acessam um core da maquina, devido a limitação do [GIL](https://wiki.python.org/moin/GlobalInterpreterLock). 
+
+A ultima versão utiliza conceitos de asincronia, com a biblioteca `asyncio`, onde cada upload é feito em uma corrotina que têm capacitade de susperedem sua execução utilizando `await` e de serem concorrentes, através de um thread que executa um event loop.
+
+Abaixo é mostrado o tempo utilizado para fazer upload de uma determinada quantidade de arquivos. Note que para fazer upload de 500 arquivos de 100k cada, a versão asincrona utilizou cerca de 20s, enquanto a versão com thread's utilizou por volta de 40s, quase o dobro. Sem dúvidas, a versão sequencial foi a pior de todas, que gastou  mais de minutos.
+
 ![Resultados em gráficos](benchmark/result.png)
+
+O leitor pode se perguntar porque houve esse ganho de performance sobre a versão asincrona, eis aqui algumas vantagens que a versão asincrona oferece sobre a versão com thread's:
+
+ - O custo de criar uma thread é bem mais caro que criar um corrotina que pode ser executada de forma concorrente.
+ - Para haver concorrencia utilizando threads em um único core, o sistema operacional faz o processo de alternar o acesso a CPU entre as threads, nesse processo as threads não têm ciência de que isso acontece, pois é feito a nivel de sistema operacional, esse processo é conhecido como *preemptive scheduling*. Já na versão asincrona, o processo de alternância é feito a nivel de aplicação de forma cooperativa(utilizando a sintaxe `await`), assim a concorrência entre as corrotinas é feita de forma mais eficaz. Esse processo é conhecido como *cooperative scheduling*.
+
+Uma desvantagem de utilizar asincronia em python é que essa feature é relativamente nova, com isso, muitas tarefas podem não possuir uma biblioteca que suporte asincronia. Ou se possuir, é possível ter uma documentação menos rica.
 
 ## Como reproduzir
 
