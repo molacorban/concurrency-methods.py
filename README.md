@@ -52,3 +52,4 @@ make show-plot
 ## Contribuições
 
 Qualquer forma de contribuição é bem-vinda, basta abrir um issue ou PR. Obrigado :rocket:
+# teste de falha técnica
