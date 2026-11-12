@@ -1,0 +1,146 @@
+# Review de IA central — exigido em todos os repos do escopo via org ruleset A
+# ("Require workflows to pass before merging"). Ver toolkit/processo-dev/PLANO.md.
+#
+# Regras de resultado do check:
+#   - PR > MAX_LINES linhas alteradas  -> review não roda, comenta e PASSA
+#   - falha técnica (API, secret, tempo) -> comenta aviso e PASSA
+#   - achado bloqueante (segurança, bug provável, código sem teste) -> FALHA
+#   - demais achados (estilo, desempenho) -> só comentário, PASSA
+#
+# Importante: nunca pular no nível do workflow/job. Workflow exigido que não reporta
+# deixa o PR "aguardando" para sempre. Todo "pulo" acontece em step.
+# Não pular PRs em draft: "Require workflows" não dispara em ready_for_review, então
+# um draft pulado ficaria com check verde sem review.
+
+name: Claude Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+concurrency:
+  group: claude-review-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+env:
+  MAX_LINES: 10000
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - name: Verificar tamanho do PR
+        id: size
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          if ! STATS=$(gh pr view "$PR" --repo "$REPO" --json additions,deletions); then
+            echo "::warning::Não foi possível obter o tamanho do PR."
+            gh pr comment "$PR" --repo "$REPO" --body "⚠️ Não foi possível obter o tamanho do PR. Review automático da Claude dispensado (check liberado)." || true
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          LINES=$(jq '.additions + .deletions' <<< "$STATS")
+          echo "O PR altera $LINES linhas (limite $MAX_LINES)"
+          if [ "$LINES" -gt "$MAX_LINES" ]; then
+            gh pr comment "$PR" --repo "$REPO" --body "⚠️ PR muito grande ($LINES linhas alteradas). Review automático da Claude dispensado." || true
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v6
+        if: steps.size.outputs.skip == 'false'
+        with:
+          fetch-depth: 1
+
+      - name: Review
+        id: claude
+        if: steps.size.outputs.skip == 'false'
+        continue-on-error: true   # falha técnica não bloqueia; tratada no step seguinte
+        uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          # A CONFIRMAR NO TESTE: sem github_token a action troca OIDC pelo token do
+          # Claude GitHub App e pode validar que este arquivo existe no repo alvo
+          # (não existe, ele é central). Se falhar, descomentar a linha abaixo.
+          # github_token: ${{ github.token }}
+          prompt: |
+            REPOSITORIO: ${{ github.repository }}
+            NUMERO DO PR: ${{ github.event.pull_request.number }}
+
+            FERRAMENTAS DISPONÍVEIS (não tente nenhuma outra):
+            - gh pr diff: diff completo do PR
+            - gh pr view: metadados do PR (use `gh pr view --comments` para ver reviews anteriores)
+            - gh pr comment: comentário geral
+            - mcp__github_inline_comment__create_inline_comment: comentário pontual no código
+
+            Você NÃO tem acesso a Read, Grep, Glob, Edit ou Bash genérico. Baseie a análise
+            exclusivamente no diff e nos metadados. Se faltar contexto fora do diff, mencione
+            a limitação e siga. Se uma ferramenta for negada, não tente de novo nem alternativas.
+
+            Este PR pode já ter sido revisado em pushes anteriores. Leia os comentários
+            existentes e NÃO repita apontamentos já feitos que continuam iguais; comente apenas
+            o que é novo ou o que foi corrigido.
+
+            Revise o PR inteiro classificando cada achado:
+
+            BLOQUEANTES (reprovam o PR):
+            - seguranca: vulnerabilidade, segredo exposto, injeção, falha de autorização, vazamento de dados pessoais
+            - bug: erro de lógica provável, quebra de contrato, exceção não tratada que afeta o fluxo
+            - sem_teste: código de produção novo ou alterado com lógica relevante e sem teste
+              correspondente no PR. Não se aplica a configuração, documentação, migrations
+              triviais ou renomeações. Indique qual teste deveria ser criado.
+
+            NÃO BLOQUEANTES (apenas comentário):
+            - estilo, legibilidade, boas práticas, desempenho
+
+            Só marque como bloqueante o que você consegue justificar pelo diff. Na dúvida,
+            comente como não bloqueante.
+
+            Use `gh pr comment` para um resumo (comece com "✅ Aprovado pela IA" ou
+            "❌ Reprovado pela IA" e liste os bloqueantes) e
+            `mcp__github_inline_comment__create_inline_comment` (com `confirmed: true`) para
+            problemas pontuais. Mensagens claras, concisas, em português (PT-BR).
+
+            Ao final, preencha a saída estruturada: `bloqueante` = true se houver ao menos um
+            achado bloqueante, e liste-os em `achados`.
+          claude_args: |
+            --model ${{ secrets.CLAUDE_MODEL }}
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"
+            --json-schema '{"type":"object","required":["bloqueante","achados"],"properties":{"bloqueante":{"type":"boolean"},"achados":{"type":"array","items":{"type":"object","required":["categoria","descricao"],"properties":{"categoria":{"type":"string","enum":["seguranca","bug","sem_teste"]},"arquivo":{"type":"string"},"linha":{"type":"integer"},"descricao":{"type":"string"}}}}}}'
+
+      - name: Resultado
+        if: steps.size.outputs.skip == 'false'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
+          OUTCOME: ${{ steps.claude.outcome }}
+          RESULT: ${{ steps.claude.outputs.structured_output }}
+        run: |
+          aviso() {
+            echo "::warning::$1"
+            gh pr comment "$PR" --repo "$REPO" --body "⚠️ $1 Check liberado sem review de IA." || true
+            exit 0
+          }
+          [ "$OUTCOME" = "success" ] || aviso "Falha técnica no review automático da Claude ($OUTCOME)."
+          [ -n "$RESULT" ] || aviso "Review da Claude não retornou resultado estruturado."
+          BLOQ=$(jq -r '.bloqueante' <<< "$RESULT" 2>/dev/null) || aviso "Resultado do review da Claude ilegível."
+          case "$BLOQ" in
+            true)
+              echo "::error::Review de IA encontrou achados bloqueantes:"
+              jq -r '.achados[] | "- [\(.categoria)] \(.arquivo // "-"):\(.linha // "-") \(.descricao)"' <<< "$RESULT"
+              exit 1 ;;
+            false)
+              echo "Review de IA sem achados bloqueantes." ;;
+            *)
+              aviso "Resultado do review da Claude sem campo 'bloqueante'." ;;
+          esac
